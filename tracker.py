@@ -769,10 +769,13 @@ class Tracker(object):
 
     def initialize_tracking(self):
         self.is_initializing = True
-        keyframes = self.config.keyframes
+        keyframes = list(self.config.keyframes)
         if len(keyframes) == 0:
             logger.error('[ERROR] Keyframes are empty!')
             exit(0)
+        if self.frame_start > 0:
+            keyframes = [self.frame_start]
+            logger.info(f'[Tracker] Overriding initialization keyframe to start_frame={self.frame_start}')
         keyframes.insert(0, keyframes[0])
         for i, j in enumerate(keyframes):
             batch = self.to_cuda(self.dataset[j], unsqueeze=True)
@@ -861,8 +864,9 @@ class Tracker(object):
         )
         # endregion
         if not loaded:
+            self.frame = self.frame_start
             self.initialize_tracking()
-            self.frame = 0
+            self.frame = self.frame_start
             # region agent log
             _debug_log(
                 "initial",

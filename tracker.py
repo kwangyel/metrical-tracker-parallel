@@ -15,6 +15,8 @@
 # Contact: mica@tue.mpg.de
 
 import os.path
+import json
+import time
 from enum import Enum
 from functools import reduce
 from glob import glob
@@ -62,6 +64,23 @@ left_iris_mp = [468, 469, 470, 471, 472]
 right_iris_mp = [473, 474, 475, 476, 477]
 
 
+def _debug_log(run_id, hypothesis_id, location, message, data):
+    try:
+        payload = {
+            "sessionId": "d4b436",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open('/Users/kinleywangyel/Desktop/Projects/Optulus/meta/lib/metrical-tracker-parallel/.cursor/debug-d4b436.log', 'a', encoding='utf-8') as f:
+            f.write(json.dumps(payload) + '\n')
+    except Exception:
+        pass
+
+
 class View(Enum):
     GROUND_TRUTH = 1
     COLOR_OVERLAY = 2
@@ -86,6 +105,20 @@ class Tracker(object):
         self.frame_start = 0
         self.frame_end_inclusive = -1
         self.frame_stop = 0
+        # region agent log
+        _debug_log(
+            "initial",
+            "H1",
+            "tracker.py:__init__",
+            "Tracker initialized with config frame bounds",
+            {
+                "config_start_frame": int(getattr(self.config, "start_frame", -999)),
+                "config_end_frame": int(getattr(self.config, "end_frame", -999)),
+                "config_begin_frames": int(getattr(self.config, "begin_frames", -999)),
+                "config_end_frames": int(getattr(self.config, "end_frames", -999)),
+            },
+        )
+        # endregion
 
         logger.add(os.path.join(self.config.save_folder, self.actor_name, 'train.log'))
 
@@ -145,8 +178,26 @@ class Tracker(object):
 
     def load_checkpoint(self, idx=-1):
         if not os.path.exists(self.checkpoint_folder):
+            # region agent log
+            _debug_log(
+                "initial",
+                "H3",
+                "tracker.py:load_checkpoint",
+                "Checkpoint folder missing, cannot resume",
+                {"checkpoint_folder": self.checkpoint_folder},
+            )
+            # endregion
             return False
         snaps = sorted(glob(self.checkpoint_folder + '/*.frame'))
+        # region agent log
+        _debug_log(
+            "initial",
+            "H3",
+            "tracker.py:load_checkpoint",
+            "Checkpoint scan complete",
+            {"checkpoint_folder": self.checkpoint_folder, "snapshot_count": len(snaps)},
+        )
+        # endregion
         if len(snaps) == 0:
             logger.info('Training from beginning...')
             return False
@@ -621,6 +672,20 @@ class Tracker(object):
             # VIDEO
             final_views = util.merge_views(final_views)
             frame_id = str(self.frame).zfill(5)
+            if self.frame <= self.frame_start + 1:
+                # region agent log
+                _debug_log(
+                    "initial",
+                    "H5",
+                    "tracker.py:checkpoint",
+                    "Writing checkpoint-related frame artifacts",
+                    {
+                        "frame_numeric": int(self.frame),
+                        "frame_id": frame_id,
+                        "frame_dst": frame_dst,
+                    },
+                )
+                # endregion
 
             cv2.imwrite('{}/{}.jpg'.format(savefolder, frame_id), final_views)
             cv2.imwrite('{}/{}.png'.format(self.input_folder, frame_id), input_image)
@@ -649,6 +714,20 @@ class Tracker(object):
         self.is_initializing = False
         if self.frame < self.frame_start:
             self.frame = self.frame_start
+        # region agent log
+        _debug_log(
+            "initial",
+            "H4",
+            "tracker.py:optimize_video",
+            "Entering optimize_video loop",
+            {
+                "loop_start_frame": int(self.frame),
+                "frame_start": int(self.frame_start),
+                "frame_stop": int(self.frame_stop),
+                "dataset_len": int(len(self.dataset)),
+            },
+        )
+        # endregion
         for i in list(range(self.frame, self.frame_stop)):
             batch = self.to_cuda(self.dataset[i], unsqueeze=True)
             if type(batch) is torch.Tensor:
@@ -743,6 +822,22 @@ class Tracker(object):
         self.frame_start = start_frame
         self.frame_end_inclusive = end_frame
         self.frame_stop = frame_stop
+        # region agent log
+        _debug_log(
+            "initial",
+            "H2",
+            "tracker.py:configure_frame_range",
+            "Configured effective frame range",
+            {
+                "dataset_len": int(dataset_len),
+                "input_start_frame": int(getattr(self.config, "start_frame", -999)),
+                "input_end_frame": int(getattr(self.config, "end_frame", -999)),
+                "effective_start": int(self.frame_start),
+                "effective_end_inclusive": int(self.frame_end_inclusive),
+                "effective_stop_exclusive": int(self.frame_stop),
+            },
+        )
+        # endregion
 
         logger.info(
             f'[Tracker] Frame range configured: start={self.frame_start}, end={self.frame_end_inclusive} '
@@ -751,9 +846,35 @@ class Tracker(object):
 
     def run(self):
         self.prepare_data()
-        if not self.load_checkpoint():
+        loaded = self.load_checkpoint()
+        # region agent log
+        _debug_log(
+            "initial",
+            "H4",
+            "tracker.py:run",
+            "Checkpoint load decision",
+            {
+                "loaded_checkpoint": bool(loaded),
+                "frame_after_load": int(self.frame),
+                "frame_start": int(self.frame_start),
+            },
+        )
+        # endregion
+        if not loaded:
             self.initialize_tracking()
             self.frame = 0
+            # region agent log
+            _debug_log(
+                "initial",
+                "H4",
+                "tracker.py:run",
+                "After initialization, frame reset before optimize_video",
+                {
+                    "frame_after_init_reset": int(self.frame),
+                    "frame_start": int(self.frame_start),
+                },
+            )
+            # endregion
 
         self.optimize_video()
         self.output_video()

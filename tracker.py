@@ -83,6 +83,9 @@ class Tracker(object):
         self.kernel_size = self.config.kernel_size
         self.sigma = None if self.config.sigma == -1 else self.config.sigma
         self.global_step = 0
+        self.frame_start = 0
+        self.frame_end_inclusive = -1
+        self.frame_stop = 0
 
         logger.add(os.path.join(self.config.save_folder, self.actor_name, 'train.log'))
 
@@ -644,7 +647,9 @@ class Tracker(object):
 
     def optimize_video(self):
         self.is_initializing = False
-        for i in list(range(self.frame, len(self.dataset))):
+        if self.frame < self.frame_start:
+            self.frame = self.frame_start
+        for i in list(range(self.frame, self.frame_stop)):
             batch = self.to_cuda(self.dataset[i], unsqueeze=True)
             if type(batch) is torch.Tensor:
                 continue
@@ -679,6 +684,9 @@ class Tracker(object):
         self.data_generator.run()
         self.dataset = ImagesDataset(self.config)
         self.dataloader = DataLoader(self.dataset, batch_size=1, num_workers=0, shuffle=False, pin_memory=True, drop_last=False)
+        self.configure_frame_range()
+        images_dir = Path(self.config.actor, 'images')
+        logger.info(f'[Tracker] Using preprocessed frames from {images_dir}')
 
     def initialize_tracking(self):
         self.is_initializing = True
@@ -704,6 +712,42 @@ class Tracker(object):
             self.frame += 1
 
         self.save_canonical()
+
+    def configure_frame_range(self):
+        dataset_len = len(self.dataset)
+        start_frame = int(getattr(self.config, 'start_frame', 0))
+        end_frame = int(getattr(self.config, 'end_frame', -1))
+
+        if start_frame < 0:
+            logger.error(f'[Tracker] start_frame must be >= 0, got {start_frame}')
+            raise ValueError('Invalid start_frame')
+        if dataset_len == 0:
+            logger.error('[Tracker] No preprocessed frames found in actor/images')
+            raise ValueError('Empty dataset')
+        if start_frame >= dataset_len:
+            logger.error(f'[Tracker] start_frame ({start_frame}) is outside dataset size ({dataset_len})')
+            raise ValueError('start_frame out of bounds')
+
+        if end_frame < 0:
+            end_frame = dataset_len - 1
+        if end_frame < start_frame:
+            logger.error(f'[Tracker] end_frame ({end_frame}) must be >= start_frame ({start_frame})')
+            raise ValueError('Invalid end_frame')
+
+        end_frame = min(end_frame, dataset_len - 1)
+        frame_stop = end_frame + 1
+        if frame_stop <= start_frame:
+            logger.error(f'[Tracker] Empty frame range after validation: {start_frame}..{end_frame}')
+            raise ValueError('Empty frame range')
+
+        self.frame_start = start_frame
+        self.frame_end_inclusive = end_frame
+        self.frame_stop = frame_stop
+
+        logger.info(
+            f'[Tracker] Frame range configured: start={self.frame_start}, end={self.frame_end_inclusive} '
+            f'(inclusive), total_selected={self.frame_stop - self.frame_start}, dataset_size={dataset_len}'
+        )
 
     def run(self):
         self.prepare_data()

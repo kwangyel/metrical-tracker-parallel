@@ -38,6 +38,8 @@ cfg.bbox_scale = 2.5
 cfg.fps = 25
 cfg.begin_frames = 0
 cfg.end_frames = 0
+cfg.start_frame = 0
+cfg.end_frame = -1
 cfg.image_size = [512, 512]  # height, width
 cfg.rotation_lr = 0.2
 cfg.translation_lr = 0.003
@@ -75,6 +77,8 @@ def update_cfg(cfg, cfg_file):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, help='Configuration file', required=True)
+    parser.add_argument('--start_frame', type=int, default=None, help='0-based start frame index for tracking')
+    parser.add_argument('--end_frame', type=int, default=None, help='0-based inclusive end frame index for tracking')
 
     args = parser.parse_args()
     print(args, end='\n\n')
@@ -86,6 +90,10 @@ def parse_args():
         cfg.cfg_file = cfg_file
 
     cfg.config_name = Path(args.cfg).stem
+    if args.start_frame is not None:
+        cfg.start_frame = args.start_frame
+    if args.end_frame is not None:
+        cfg.end_frame = args.end_frame
 
     return cfg
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
+import multiprocessing as mp
 from pathlib import Path
 import shutil
 import sys
@@ -158,7 +159,9 @@ def run_tracker_chunk(cfg_file: str, base_save_folder: str, chunk_payload: Dict,
 
 def run_chunks_parallel(cfg_file: str, save_folder: Path, chunks: List[ChunkSpec], num_workers: int, device: str) -> List[Dict]:
     results: List[Dict] = []
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    # CUDA is incompatible with forked subprocesses; enforce spawn for Colab/Linux workers.
+    mp_context = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_context) as executor:
         futures = [
             executor.submit(run_tracker_chunk, cfg_file, str(save_folder), asdict(chunk), device)
             for chunk in chunks

@@ -10,7 +10,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.parallel_batching import (  # noqa: E402
+    expected_owned_frames,
     plan_chunks,
+    plan_chunks_for_range,
     resolve_merge_owner,
     schedule_chunks,
     validate_batching_params,
@@ -101,6 +103,46 @@ def test_queue_scheduling():
     assert [[chunk.chunk_id for chunk in wave] for wave in waves] == [[0, 1], [2, 3], [4]]
 
 
+def test_plan_chunks_from_start_frame():
+    chunks = plan_chunks_for_range(500, 150, 20, start_frame=200)
+    assert len(chunks) == 3
+    assert_chunk(chunks[0], 0, 200, 349, 200, 349)
+    assert_chunk(chunks[1], 1, 330, 479, 350, 479)
+    assert_chunk(chunks[2], 2, 460, 499, 480, 499)
+
+
+def test_plan_chunks_with_end_frame():
+    chunks = plan_chunks_for_range(500, 150, 20, start_frame=200, end_frame=349)
+    assert len(chunks) == 1
+    assert_chunk(chunks[0], 0, 200, 349, 200, 349)
+
+
+def test_expected_owned_frames_subset():
+    start_frame = 200
+    end_frame = 499
+    chunks = plan_chunks_for_range(500, 150, 20, start_frame=start_frame, end_frame=end_frame)
+    owned = expected_owned_frames(chunks)
+
+    assert owned == set(range(start_frame, end_frame + 1))
+    assert owned.isdisjoint(set(range(start_frame)))
+
+
+def test_start_frame_validation():
+    try:
+        plan_chunks_for_range(500, 150, 20, start_frame=500)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected validation failure for start_frame >= total_frames")
+
+    try:
+        plan_chunks_for_range(500, 150, 20, start_frame=400, end_frame=200)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected validation failure for start_frame > end_frame")
+
+
 def test_custom_params(total_frames, batch_frames, overlap_frames, num_workers):
     validate_batching_params(total_frames, batch_frames, overlap_frames, num_workers)
     chunks = plan_chunks(total_frames, batch_frames, overlap_frames)
@@ -154,6 +196,10 @@ def main():
     test_parameter_validation()
     test_merge_ownership_has_full_coverage()
     test_queue_scheduling()
+    test_plan_chunks_from_start_frame()
+    test_plan_chunks_with_end_frame()
+    test_expected_owned_frames_subset()
+    test_start_frame_validation()
     test_custom_params(args.total_frames, args.batch_frames, args.overlap_frames, args.num_workers)
 
     print_chunk_table(args.total_frames, args.batch_frames, args.overlap_frames, args.num_workers)

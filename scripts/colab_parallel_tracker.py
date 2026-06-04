@@ -16,10 +16,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.parallel_batching import (  # noqa: E402
     ChunkSpec,
+    expected_owned_frames,
     format_frame_id,
     owned_frame_ids,
-    plan_chunks,
-    resolve_merge_owner,
+    plan_chunks_for_range,
+    resolve_effective_end_frame,
     schedule_chunks,
     validate_batching_params,
 )
@@ -34,15 +35,10 @@ NUM_WORKERS = 2
 DEVICE = "cuda:0"
 RUN_PREPROCESS = True
 RENDER_VIDEO = False
+START_FRAME = 0
+END_FRAME = -1
 
-
-ARTIFACT_EXTENSIONS = {
-    "checkpoint": ".frame",
-    "mesh": ".ply",
-    "depth": ".png",
-    "video": ".jpg",
-    "input": ".png",
-}
+CHECKPOINT_SUFFIX = ".frame"
 
 
 def ensure_repo_root() -> None:
@@ -60,7 +56,12 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=NUM_WORKERS)
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--skip_preprocess", action="store_true", help="Use existing actor/images, kpt, and kpt_dense files.")
-    parser.add_argument("--render_video", action="store_true", default=RENDER_VIDEO)
+    parser.add_argument("--render_video", action="store_true", default=RENDER_VIDEO,
+                        help="Render video from merged/<actor>/video/ (requires video frames; not created by checkpoint merge).")
+    parser.add_argument("--start_frame", type=int, default=START_FRAME,
+                        help="0-based first global frame index to process (default: 0).")
+    parser.add_argument("--end_frame", type=int, default=END_FRAME,
+                        help="0-based inclusive last frame to process; -1 means last frame in dataset.")
     return parser.parse_args()
 
 
@@ -174,45 +175,37 @@ def run_chunks_parallel(cfg_file: str, save_folder: Path, chunks: List[ChunkSpec
     return sorted(results, key=lambda item: item["chunk_id"])
 
 
-def copy_frame_artifact(src_actor_dir: Path, dst_actor_dir: Path, folder_name: str, frame_id: int) -> None:
-    suffix = ARTIFACT_EXTENSIONS[folder_name]
-    frame_name = format_frame_id(frame_id) + suffix
-    src = src_actor_dir / folder_name / frame_name
-    dst = dst_actor_dir / folder_name / frame_name
+def copy_checkpoint(src_actor_dir: Path, dst_checkpoint_dir: Path, frame_id: int) -> None:
+    frame_name = format_frame_id(frame_id) + CHECKPOINT_SUFFIX
+    src = src_actor_dir / "checkpoint" / frame_name
+    dst = dst_checkpoint_dir / frame_name
 
     if not src.exists():
-        raise FileNotFoundError(f"Missing expected artifact: {src}")
+        raise FileNotFoundError(f"Missing expected checkpoint: {src}")
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst_checkpoint_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
 
-def merge_chunk_outputs(base_save_folder: Path, actor_name: str, chunks: List[ChunkSpec], total_frames: int) -> Path:
-    owners = resolve_merge_owner(chunks)
-    expected_frames = set(range(total_frames))
-    if set(owners.keys()) != expected_frames:
-        missing = sorted(expected_frames - set(owners.keys()))
-        extra = sorted(set(owners.keys()) - expected_frames)
-        raise ValueError(f"Merge ownership does not match frame range. missing={missing[:10]} extra={extra[:10]}")
-
+def merge_chunk_checkpoints(base_save_folder: Path, actor_name: str, chunks: List[ChunkSpec]) -> Path:
+    expected = expected_owned_frames(chunks)
     merged_actor_dir = base_save_folder / "merged" / actor_name
-    if merged_actor_dir.exists():
-        shutil.rmtree(merged_actor_dir)
-    merged_actor_dir.mkdir(parents=True, exist_ok=True)
+    merged_checkpoint_dir = merged_actor_dir / "checkpoint"
+    merged_checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for chunk in chunks:
         src_actor_dir = chunk_save_folder(base_save_folder, chunk) / actor_name
         for frame_id in owned_frame_ids(chunk):
-            for folder_name in ARTIFACT_EXTENSIONS:
-                copy_frame_artifact(src_actor_dir, merged_actor_dir, folder_name, frame_id)
+            copy_checkpoint(src_actor_dir, merged_checkpoint_dir, frame_id)
 
-        canonical = src_actor_dir / "canonical.obj"
-        if chunk.chunk_id == 0 and canonical.exists():
-            shutil.copy2(canonical, merged_actor_dir / "canonical.obj")
-
-    checkpoint_count = len(list((merged_actor_dir / "checkpoint").glob("*.frame")))
-    if checkpoint_count != total_frames:
-        raise ValueError(f"Merged checkpoint count {checkpoint_count} != total frame count {total_frames}")
+    missing = sorted(
+        frame_id for frame_id in expected
+        if not (merged_checkpoint_dir / (format_frame_id(frame_id) + CHECKPOINT_SUFFIX)).exists()
+    )
+    if missing:
+        raise ValueError(
+            f"Merged checkpoint missing {len(missing)} frame(s); first missing index: {missing[0]}"
+        )
 
     return merged_actor_dir
 
@@ -238,22 +231,48 @@ def main():
     actor_name, total_frames, fps = preprocess_and_count_frames(args.cfg, save_folder, run_preprocess)
     validate_batching_params(total_frames, args.batch_frames, args.overlap_frames, args.num_workers)
 
-    chunks = plan_chunks(total_frames, args.batch_frames, args.overlap_frames)
+    start_frame = int(args.start_frame)
+    effective_end = resolve_effective_end_frame(total_frames, args.end_frame)
+    if start_frame > effective_end:
+        raise ValueError(
+            f"start_frame ({start_frame}) must be <= end_frame ({effective_end})"
+        )
+
+    chunks = plan_chunks_for_range(
+        total_frames,
+        args.batch_frames,
+        args.overlap_frames,
+        start_frame=start_frame,
+        end_frame=effective_end,
+    )
+    expected = expected_owned_frames(chunks)
+
     print(f"Actor: {actor_name}")
-    print(f"Total frames: {total_frames}")
+    print(f"Total frames in dataset: {total_frames}")
+    print(f"Processing range: {start_frame}..{effective_end} (inclusive, {len(expected)} owned frames)")
     print(f"Batch frames: {args.batch_frames}")
     print(f"Overlap frames: {args.overlap_frames}")
     print(f"Workers: {args.num_workers}")
     print_chunk_table(chunks, args.num_workers)
 
     results = run_chunks_parallel(args.cfg, save_folder, chunks, args.num_workers, args.device)
-    print(f"\nFinished {len(results)} chunks. Merging owned frame artifacts...")
-    merged_actor_dir = merge_chunk_outputs(save_folder, actor_name, chunks, total_frames)
+    print(f"\nFinished {len(results)} chunks. Merging owned checkpoints...")
+    merged_actor_dir = merge_chunk_checkpoints(save_folder, actor_name, chunks)
 
     if args.render_video:
-        render_merged_video(merged_actor_dir, fps)
+        video_dir = merged_actor_dir / "video"
+        if not video_dir.exists() or not any(video_dir.glob("*.jpg")):
+            print(
+                "Warning: --render_video skipped; merged output has checkpoints only "
+                "(no video/ frames under merged actor dir)."
+            )
+        else:
+            render_merged_video(merged_actor_dir, fps)
 
-    print(f"\nPASS: merged {total_frames} frames into {merged_actor_dir}")
+    print(
+        f"\nPASS: merged {len(expected)} checkpoints into "
+        f"{merged_actor_dir / 'checkpoint'}"
+    )
 
 
 if __name__ == "__main__":

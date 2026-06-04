@@ -68,6 +68,54 @@ def plan_chunks(total_frames: int, batch_frames: int, overlap_frames: int) -> Li
     return chunks
 
 
+def resolve_effective_end_frame(total_frames: int, end_frame: int | None) -> int:
+    if total_frames == 0:
+        raise ValueError("total_frames must be > 0")
+    if end_frame is None or end_frame < 0:
+        return total_frames - 1
+    return min(end_frame, total_frames - 1)
+
+
+def plan_chunks_for_range(
+    total_frames: int,
+    batch_frames: int,
+    overlap_frames: int,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> List[ChunkSpec]:
+    if start_frame < 0:
+        raise ValueError("start_frame must be >= 0")
+    if start_frame >= total_frames:
+        raise ValueError(f"start_frame ({start_frame}) must be < total_frames ({total_frames})")
+
+    effective_end = resolve_effective_end_frame(total_frames, end_frame)
+    if effective_end < start_frame:
+        raise ValueError(
+            f"end_frame ({effective_end}) must be >= start_frame ({start_frame})"
+        )
+
+    local_count = effective_end - start_frame + 1
+    local_chunks = plan_chunks(local_count, batch_frames, overlap_frames)
+    offset_chunks: List[ChunkSpec] = []
+    for chunk in local_chunks:
+        overlap_start = None if chunk.overlap_start is None else chunk.overlap_start + start_frame
+        offset_chunks.append(
+            ChunkSpec(
+                chunk_id=chunk.chunk_id,
+                start_frame=chunk.start_frame + start_frame,
+                end_frame=chunk.end_frame + start_frame,
+                overlap_start=overlap_start,
+                owned_start=chunk.owned_start + start_frame,
+                owned_end=chunk.owned_end + start_frame,
+            )
+        )
+    return offset_chunks
+
+
+def expected_owned_frames(chunks: Iterable[ChunkSpec]) -> set[int]:
+    return {frame_id for chunk in chunks for frame_id in owned_frame_ids(chunk)}
+
+
 def schedule_chunks(chunks: Iterable[ChunkSpec], num_workers: int) -> List[List[ChunkSpec]]:
     if num_workers < 1:
         raise ValueError("num_workers must be >= 1")
